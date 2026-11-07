@@ -1,0 +1,17 @@
+# 构建产物
+build/
+*.exe
+*.log
+*.syso
+
+# 本地临时文件
+*.tmp
+*.bak
+
+# 本地配置与运行数据（可能含存储桶、密钥等隐私信息）
+config.json
+credentials.json
+history.json
+
+# 截图与本地工具产物
+.screenshots/

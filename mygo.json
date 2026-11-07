@@ -1,0 +1,8 @@
+{
+  "name": "CloudPix",
+  "identifier": "dev.clover.cloudpix",
+  "slug": "cloudpix",
+  "version": "0.1.0",
+  "out": "build",
+  "icon": "icon/AppIcon.png"
+}
