@@ -3,7 +3,7 @@ module cloudpix
 go 1.27.3
 
 require (
-	github.com/egoist/mygo v0.7.4
+	github.com/egoist/mygo v0.8.1
 	github.com/gen2brain/avif v0.6.0
 	golang.org/x/image v0.46.0
 )
