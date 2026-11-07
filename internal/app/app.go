@@ -358,6 +358,7 @@ func (a *app) reportImage(m upload.ImageMeta) {
 		SizeMB: float64(size) / 1e6,
 		MD5:    m.MD5,
 		Time:   m.Job.Finished.Format("2006-01-02 15:04:05"),
+		Theme:  m.Theme,
 	}
 	rc := upload.ReportConfig{
 		Enabled:  cfg.Enabled,

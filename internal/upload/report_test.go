@@ -2,6 +2,7 @@ package upload
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 func TestSendReport(t *testing.T) {
 	var got reportPayload
+	var raw []byte
 	var token, contentType string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -17,7 +19,13 @@ func TestSendReport(t *testing.T) {
 		}
 		token = r.Header.Get("X-Api-Token")
 		contentType = r.Header.Get("Content-Type")
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		raw = body
+		if err := json.Unmarshal(body, &got); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -36,6 +44,7 @@ func TestSendReport(t *testing.T) {
 		SizeMB: 1.25,
 		MD5:    "0123456789abcdef0123456789abcdef",
 		Time:   "2026-10-25 12:00:00",
+		Theme:  "#285adc",
 	}
 	cfg := ReportConfig{Enabled: true, Endpoint: srv.URL, Token: "secret"}
 	if err := SendReport(cfg, img); err != nil {
@@ -45,8 +54,17 @@ func TestSendReport(t *testing.T) {
 		t.Fatalf("请求头不正确：token=%q content-type=%q", token, contentType)
 	}
 	if got.ID != img.ID || got.URL != img.URL || got.W != 1920 || got.H != 1080 ||
-		got.Age != "p站" || got.Size != 1.25 || got.MD5 != img.MD5 || got.Time != img.Time {
+		got.Age != "p站" || got.Size != 1.25 || got.MD5 != img.MD5 || got.Time != img.Time ||
+		got.Color != img.Theme {
 		t.Fatalf("请求体不正确：%+v", got)
+	}
+	// 字段名必须与接口约定一致：theme_color。
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("解析请求体失败：%v", err)
+	}
+	if fields["theme_color"] != "#285adc" {
+		t.Fatalf("theme_color 字段缺失或取值不对：%v", fields)
 	}
 }
 

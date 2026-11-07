@@ -113,6 +113,68 @@ func ImageSize(path string) (w, h int, ok bool) {
 	return cfg.Width, cfg.Height, true
 }
 
+// ThemeColor 取图片的主题色，返回 #rrggbb；无法解码时返回空字符串。
+// 做法是抽样做颜色分桶投票：透明像素、接近纯白与纯黑的像素不参与投票，
+// 避免大块背景把主题色带偏；全图都是背景色时退回整体平均色。
+func ThemeColor(path string) string {
+	img, err := decodeImage(path)
+	if err != nil {
+		return ""
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+	step := 1
+	if m := max(w, h); m > 160 {
+		step = (m + 159) / 160
+	}
+
+	type bucket struct{ r, g, b, n int }
+	buckets := make(map[int]*bucket, 512)
+	var sumR, sumG, sumB, sumN int
+
+	for y := b.Min.Y; y < b.Max.Y; y += step {
+		for x := b.Min.X; x < b.Max.X; x += step {
+			r, g, bl, a := img.At(x, y).RGBA()
+			if a < 0x8000 {
+				continue // 透明像素不参与配色
+			}
+			// RGBA() 返回预乘值，先还原成 8 位真色。
+			cr := int(r * 0xffff / a >> 8)
+			cg := int(g * 0xffff / a >> 8)
+			cb := int(bl * 0xffff / a >> 8)
+			sumR, sumG, sumB, sumN = sumR+cr, sumG+cg, sumB+cb, sumN+1
+
+			if (cr >= 244 && cg >= 244 && cb >= 244) || (cr <= 12 && cg <= 12 && cb <= 12) {
+				continue
+			}
+			k := (cr>>4)<<8 | (cg>>4)<<4 | cb>>4
+			bk := buckets[k]
+			if bk == nil {
+				bk = &bucket{}
+				buckets[k] = bk
+			}
+			bk.r, bk.g, bk.b, bk.n = bk.r+cr, bk.g+cg, bk.b+cb, bk.n+1
+		}
+	}
+
+	var top *bucket
+	for _, bk := range buckets {
+		if top == nil || bk.n > top.n {
+			top = bk
+		}
+	}
+	if top != nil {
+		return fmt.Sprintf("#%02x%02x%02x", top.r/top.n, top.g/top.n, top.b/top.n)
+	}
+	if sumN == 0 {
+		return ""
+	}
+	return fmt.Sprintf("#%02x%02x%02x", sumR/sumN, sumG/sumN, sumB/sumN)
+}
+
 // decodeImage 按扩展名解码；非图片文件返回错误。
 func decodeImage(path string) (image.Image, error) {
 	f, err := os.Open(path)

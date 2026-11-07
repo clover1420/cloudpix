@@ -48,6 +48,8 @@ type ReportImage struct {
 	SizeMB float64
 	MD5    string
 	Time   string
+	// Theme 是图片主题色（#rrggbb），取不到时为空字符串。
+	Theme string
 }
 
 // reportPayload 是接口要求的 JSON 结构。
@@ -61,6 +63,7 @@ type reportPayload struct {
 	Size  float64 `json:"size"`
 	MD5   string  `json:"md5"`
 	Time  string  `json:"time"`
+	Color string  `json:"theme_color"`
 }
 
 // SendReport 把图片信息 POST 到配置的接口。409（已存在）视为成功，
@@ -81,6 +84,7 @@ func SendReport(cfg ReportConfig, img ReportImage) error {
 		Size:  img.SizeMB,
 		MD5:   img.MD5,
 		Time:  img.Time,
+		Color: img.Theme,
 	})
 	if err != nil {
 		return fmt.Errorf("序列化上报内容失败：%w", err)

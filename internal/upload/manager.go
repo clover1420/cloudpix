@@ -55,6 +55,8 @@ type ImageMeta struct {
 	MD5    string
 	Width  int
 	Height int
+	// Theme 是原图的主题色（#rrggbb），读不到时为空。
+	Theme string
 }
 
 // Manager 管理上传任务：计算摘要、生成对象键、分批上传、回报进度。
@@ -395,17 +397,28 @@ func (m *Manager) run(id int64) {
 		m.onDone(done)
 	}
 	if reporter != nil {
-		// 上报的尺寸、MD5 都取图片处理之前的原文件；URL 仍指向上传后的对象。
-		if w, h, ok := ImageSize(job.Path); ok {
+		// 尺寸、主题色、MD5 都取图片处理之前的原文件；URL 仍指向上传后的对象。
+		// 解整图取主题色较慢，放到独立协程，避免占用上传批次的位置。
+		go func() {
+			w, h, ok := ImageSize(job.Path)
+			if !ok {
+				return
+			}
 			md5sum := md5sum
 			if proc.Temporary {
 				if _, sum, _, err := hashFile(job.Path); err == nil {
 					md5sum = sum
 				}
 			}
-			meta := ImageMeta{Job: done, SHA256: sha, MD5: md5sum, Width: w, Height: h}
-			go reporter(meta)
-		}
+			reporter(ImageMeta{
+				Job:    done,
+				SHA256: sha,
+				MD5:    md5sum,
+				Width:  w,
+				Height: h,
+				Theme:  ThemeColor(job.Path),
+			})
+		}()
 	}
 }
 
