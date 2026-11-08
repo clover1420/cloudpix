@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gen2brain/avif"
@@ -119,8 +120,12 @@ func ImageSize(path string) (w, h int, ok bool) {
 }
 
 // ThemeColor 取图片的主题色，返回 #rrggbb；无法解码时返回空字符串。
-// 做法是抽样做颜色分桶投票：透明像素、接近纯白与纯黑的像素不参与投票，
-// 避免大块背景把主题色带偏；全图都是背景色时退回整体平均色。
+//
+// 配色改用八叉树颜色量化，移植自 xiong35/color-extraction 的 src/octree.ts：
+// 每个像素按 R/G/B 的二进制位逐层插入八叉树，叶子数超过上限时合并最深层
+// 节点，最后按叶子累计的像素数排序取主色。透明像素不参与统计；接近纯白、
+// 纯黑的大块背景会先跳过，避免背景色压过画面主体，全图都是中性色时再退回
+// 像素最多的颜色。
 func ThemeColor(path string) string {
 	img, err := decodeImage(path)
 	if err != nil {
@@ -136,10 +141,8 @@ func ThemeColor(path string) string {
 		step = (m + 159) / 160
 	}
 
-	type bucket struct{ r, g, b, n int }
-	buckets := make(map[int]*bucket, 512)
-	var sumR, sumG, sumB, sumN int
-
+	t := &octree{root: &octreeNode{}, maxLeaf: 16}
+	total := 0
 	for y := b.Min.Y; y < b.Max.Y; y += step {
 		for x := b.Min.X; x < b.Max.X; x += step {
 			r, g, bl, a := img.At(x, y).RGBA()
@@ -150,34 +153,120 @@ func ThemeColor(path string) string {
 			cr := int(r * 0xffff / a >> 8)
 			cg := int(g * 0xffff / a >> 8)
 			cb := int(bl * 0xffff / a >> 8)
-			sumR, sumG, sumB, sumN = sumR+cr, sumG+cg, sumB+cb, sumN+1
-
-			if (cr >= 244 && cg >= 244 && cb >= 244) || (cr <= 12 && cg <= 12 && cb <= 12) {
-				continue
+			t.add(t.root, cr, cg, cb, 0)
+			total++
+			// 叶子超过上限时合并最深层节点，与参考实现一致。
+			for t.leafNum > t.maxLeaf {
+				t.reduce()
 			}
-			k := (cr>>4)<<8 | (cg>>4)<<4 | cb>>4
-			bk := buckets[k]
-			if bk == nil {
-				bk = &bucket{}
-				buckets[k] = bk
-			}
-			bk.r, bk.g, bk.b, bk.n = bk.r+cr, bk.g+cg, bk.b+cb, bk.n+1
 		}
 	}
-
-	var top *bucket
-	for _, bk := range buckets {
-		if top == nil || bk.n > top.n {
-			top = bk
-		}
-	}
-	if top != nil {
-		return fmt.Sprintf("#%02x%02x%02x", top.r/top.n, top.g/top.n, top.b/top.n)
-	}
-	if sumN == 0 {
+	if total == 0 {
 		return ""
 	}
-	return fmt.Sprintf("#%02x%02x%02x", sumR/sumN, sumG/sumN, sumB/sumN)
+	return t.theme()
+}
+
+// octreeNode 是八叉树量化节点；叶子累计颜色之和与像素数。
+type octreeNode struct {
+	children [8]*octreeNode
+	leaf     bool
+	r, g, b  int
+	count    int
+}
+
+// octree 保存根节点、叶子数量以及第 0-6 层可合并的非叶节点。
+type octree struct {
+	root     *octreeNode
+	leafNum  int
+	maxLeaf  int
+	toReduce [7][]*octreeNode
+}
+
+// add 按 level 位把颜色插入子树；level 7 是叶子层。
+func (t *octree) add(n *octreeNode, r, g, b, level int) {
+	if n.leaf {
+		n.count++
+		n.r += r
+		n.g += g
+		n.b += b
+		return
+	}
+	idx := (r>>(7-level))&1<<2 | (g>>(7-level))&1<<1 | (b>>(7-level))&1
+	child := n.children[idx]
+	if child == nil {
+		child = &octreeNode{}
+		n.children[idx] = child
+		if level+1 == 7 {
+			child.leaf = true
+			t.leafNum++
+		} else {
+			t.toReduce[level+1] = append(t.toReduce[level+1], child)
+		}
+	}
+	t.add(child, r, g, b, level+1)
+}
+
+// reduce 从最深的非空层取出一个节点合并成叶子；它的子节点此时都已带统计值。
+func (t *octree) reduce() {
+	level := 6
+	for level >= 0 && len(t.toReduce[level]) == 0 {
+		level--
+	}
+	if level < 0 {
+		return
+	}
+	list := t.toReduce[level]
+	n := list[len(list)-1]
+	t.toReduce[level] = list[:len(list)-1]
+
+	n.leaf = true
+	n.r, n.g, n.b, n.count = 0, 0, 0, 0
+	for _, c := range n.children {
+		if c == nil {
+			continue
+		}
+		n.r += c.r
+		n.g += c.g
+		n.b += c.b
+		n.count += c.count
+		t.leafNum--
+	}
+	t.leafNum++
+}
+
+// theme 返回像素数最多的非中性色；没有非中性色时返回最多的颜色。
+func (t *octree) theme() string {
+	type entry struct{ r, g, b, n int }
+	var palette []entry
+	var walk func(n *octreeNode)
+	walk = func(n *octreeNode) {
+		if n.leaf {
+			if n.count > 0 {
+				palette = append(palette, entry{n.r / n.count, n.g / n.count, n.b / n.count, n.count})
+			}
+			return
+		}
+		for _, c := range n.children {
+			if c != nil {
+				walk(c)
+			}
+		}
+	}
+	walk(t.root)
+	if len(palette) == 0 {
+		return ""
+	}
+	sort.SliceStable(palette, func(i, j int) bool { return palette[i].n > palette[j].n })
+	for _, e := range palette {
+		// 近白、近黑通常是背景，跳过。
+		if (e.r >= 244 && e.g >= 244 && e.b >= 244) || (e.r <= 12 && e.g <= 12 && e.b <= 12) {
+			continue
+		}
+		return fmt.Sprintf("#%02x%02x%02x", e.r, e.g, e.b)
+	}
+	e := palette[0]
+	return fmt.Sprintf("#%02x%02x%02x", e.r, e.g, e.b)
 }
 
 // decodeImage 按扩展名解码；非图片文件返回错误。

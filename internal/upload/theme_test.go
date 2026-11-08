@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -74,6 +75,37 @@ func TestThemeColorTransparent(t *testing.T) {
 	}
 	if got := ThemeColor(writePNG(t, img, "green.png")); got != "#1ea046" {
 		t.Fatalf("透明区域不应影响主题色，得到 %q", got)
+	}
+}
+
+func TestThemeColorOctreeReduce(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	// 铺 40 种颜色，让叶子数量超过上限，触发八叉树的合并分支。
+	for i := 0; i < 40; i++ {
+		c := color.RGBA{R: uint8(i * 6), G: uint8(255 - i*6), B: uint8(i * 3), A: 255}
+		for y := 0; y < 400; y++ {
+			for x := i * 10; x < (i+1)*10; x++ {
+				img.Set(x, y, c)
+			}
+		}
+	}
+	// 中间一大块橙色才是真正的主色。
+	for y := 20; y < 380; y++ {
+		for x := 20; x < 380; x++ {
+			img.Set(x, y, color.RGBA{R: 240, G: 120, B: 30, A: 255})
+		}
+	}
+	got := ThemeColor(writePNG(t, img, "octree.png"))
+	if len(got) != 7 || got[0] != '#' {
+		t.Fatalf("主题色格式不对：%q", got)
+	}
+	r, err1 := strconv.ParseUint(got[1:3], 16, 8)
+	b, err3 := strconv.ParseUint(got[5:7], 16, 8)
+	if err1 != nil || err3 != nil {
+		t.Fatalf("解析主题色失败：%q", got)
+	}
+	if r <= b {
+		t.Fatalf("主色应偏橙，得到 %q", got)
 	}
 }
 
