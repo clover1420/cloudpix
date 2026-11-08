@@ -7,12 +7,15 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"image"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +23,8 @@ import (
 	_ "github.com/egoist/mygo/locales/zh-Hans"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/gen2brain/avif"
+	xdraw "golang.org/x/image/draw"
 
 	"cloudpix/internal/store"
 	"cloudpix/internal/upload"
@@ -28,22 +33,23 @@ import (
 // providerState 是后台协程可见的配置快照。主线程更新它时用原子写，
 // 避免上传协程与设置页共享可变结构体。
 type providerState struct {
-	prof  store.Profile
-	creds store.Credentials
+	prof store.Profile
 }
 
 type app struct {
 	win *mygo.Window
 
-	cfg        store.Config
-	prof       store.Profile
-	creds      store.Credentials
-	draft      store.Profile // 设置页正在编辑的副本
-	draftCreds store.Credentials
+	cfg   store.Config
+	prof  store.Profile
+	draft store.Profile // 设置页正在编辑的副本
 
 	state     atomic.Pointer[providerState]
 	reportCfg atomic.Pointer[store.Report]
+	visionCfg atomic.Pointer[store.Vision]
 	mgr       *upload.Manager
+
+	// visionSem 让标签请求串行执行，避免一次上传多张时把视觉接口打满。
+	visionSem chan struct{}
 
 	history []store.Record
 
@@ -55,6 +61,12 @@ type app struct {
 
 	previews     map[string]*ui.Bitmap
 	previewTried map[string]bool
+
+	// 上传进度回调很频繁；这里把它们合并成最多每 100 毫秒重绘一帧，
+	// 避免多次 RequestFrame 造成整帧反复重建。
+	paintMu     sync.Mutex
+	lastPaint   time.Time
+	paintQueued bool
 
 	uploadList ui.ScrollState
 	histList   ui.ScrollState
@@ -104,6 +116,7 @@ func newApp() *app {
 	a := &app{
 		previews:     map[string]*ui.Bitmap{},
 		previewTried: map[string]bool{},
+		visionSem:    make(chan struct{}, 1),
 	}
 	cfg, err := store.LoadConfig()
 	if err != nil {
@@ -112,9 +125,7 @@ func newApp() *app {
 	}
 	a.cfg = cfg
 	a.prof = cfg.ActiveProfile()
-	a.creds = store.LoadCredentials(a.prof.ID)
 	a.draft = a.prof
-	a.draftCreds = a.creds
 	a.history = store.LoadHistory()
 
 	a.mgr = upload.NewManager(a.provider, a.changed, a.done)
@@ -123,7 +134,9 @@ func newApp() *app {
 	a.mgr.SetReporter(a.reportImage)
 	rep := a.cfg.Report
 	a.reportCfg.Store(&rep)
-	a.state.Store(&providerState{prof: a.prof, creds: a.creds})
+	vis := a.cfg.Vision
+	a.visionCfg.Store(&vis)
+	a.state.Store(&providerState{prof: a.prof})
 	return a
 }
 
@@ -136,8 +149,31 @@ func (a *app) post(fn func()) {
 }
 
 // changed 由上传队列的后台协程调用；任务列表每帧从 Manager 拉取，
-// 因此这里只需要触发一帧重绘。
-func (a *app) changed() { a.post(func() {}) }
+// 因此这里只需要触发一帧重绘。多个任务同时上传时回调会很密集，
+// 合并为最多每 100 毫秒一帧，保证最后一次状态变化仍会刷新。
+func (a *app) changed() {
+	a.paintMu.Lock()
+	if a.paintQueued {
+		a.paintMu.Unlock()
+		return
+	}
+	wait := 100*time.Millisecond - time.Since(a.lastPaint)
+	if wait > 0 {
+		a.paintQueued = true
+		a.paintMu.Unlock()
+		time.AfterFunc(wait, func() {
+			a.paintMu.Lock()
+			a.paintQueued = false
+			a.lastPaint = time.Now()
+			a.paintMu.Unlock()
+			a.post(func() {})
+		})
+		return
+	}
+	a.lastPaint = time.Now()
+	a.paintMu.Unlock()
+	a.post(func() {})
+}
 
 // done 在上传成功后由后台协程调用：写历史、复制链接、提示。
 func (a *app) done(j upload.Job) {
@@ -178,8 +214,8 @@ func (a *app) provider() (upload.Provider, error) {
 		Endpoint:   p.Endpoint,
 		Region:     p.Region,
 		Bucket:     p.Bucket,
-		AccessKey:  st.creds.AccessKey,
-		SecretKey:  st.creds.SecretKey,
+		AccessKey:  p.AccessKey,
+		SecretKey:  p.SecretKey,
 		PublicBase: p.PublicBase,
 		PathStyle:  p.PathStyle,
 	})
@@ -319,17 +355,14 @@ func (a *app) saveSettings() {
 		a.flash("配置保存失败：" + err.Error())
 		return
 	}
-	if err := store.SaveCredentials(p.ID, a.draftCreds); err != nil {
-		a.flash("密钥保存失败：" + err.Error())
-		return
-	}
 	a.prof = p
-	a.creds = a.draftCreds
-	a.state.Store(&providerState{prof: p, creds: a.draftCreds})
+	a.state.Store(&providerState{prof: p})
 	a.mgr.Configure(p.Prefix, a.cfg.KeepName, a.processConfig(), p.LinkParams)
 	a.mgr.SetBatch(a.cfg.Batch)
 	rep := a.cfg.Report
 	a.reportCfg.Store(&rep)
+	vis := a.cfg.Vision
+	a.visionCfg.Store(&vis)
 	a.flash("设置已保存")
 }
 
@@ -360,6 +393,27 @@ func (a *app) reportImage(m upload.ImageMeta) {
 		Time:   m.Job.Finished.Format("2006-01-02 15:04:05"),
 		Theme:  m.Theme,
 	}
+	// 标签由视觉模型生成；串行请求，避免一次传多张时打满接口。
+	// 智谱等接口无法解析 AVIF 链接，优先传本地缩小的 JPEG base64。
+	if v := a.visionCfg.Load(); v != nil && v.Enabled && strings.TrimSpace(v.Endpoint) != "" {
+		a.visionSem <- struct{}{}
+		imagePayload := m.Job.URL
+		if thumb, err := upload.ThumbnailDataURL(m.Job.Path, 1024); err == nil {
+			imagePayload = thumb
+		}
+		tags, err := upload.VisionConfig{
+			Enabled:  v.Enabled,
+			Endpoint: v.Endpoint,
+			Token:    v.Token,
+			Model:    v.Model,
+		}.Labels(context.Background(), imagePayload)
+		<-a.visionSem
+		if err != nil {
+			log.Printf("生成标签失败：%v", err)
+		} else {
+			img.Tags = tags
+		}
+	}
 	rc := upload.ReportConfig{
 		Enabled:  cfg.Enabled,
 		Endpoint: cfg.Endpoint,
@@ -386,9 +440,7 @@ func (a *app) switchProfile(id string) {
 			a.cfg.Active = id
 			a.prof = p
 			a.draft = p
-			a.creds = store.LoadCredentials(id)
-			a.draftCreds = a.creds
-			a.state.Store(&providerState{prof: p, creds: a.creds})
+			a.state.Store(&providerState{prof: p})
 			a.mgr.Configure(p.Prefix, a.cfg.KeepName, a.processConfig(), p.LinkParams)
 			_ = store.SaveConfig(a.cfg)
 			return
@@ -414,8 +466,8 @@ func applyPreset(p *store.Profile) {
 	}
 }
 
-// preview 懒加载缩略图。只在主线程调用（view 内）。
-// 超过 16 MB 的图片不预览，避免解码拖慢界面。
+// preview 返回列表里的缩略图。首次出现时在后台解码并缩放，解码完成后
+// 再回到主线程放入缓存，避免在主线程解大图造成卡顿。
 func (a *app) preview(path string) *ui.Bitmap {
 	if b, ok := a.previews[path]; ok {
 		return b
@@ -424,18 +476,51 @@ func (a *app) preview(path string) *ui.Bitmap {
 		return nil
 	}
 	a.previewTried[path] = true
+	go func() {
+		img, err := decodeThumb(path, 128)
+		if err != nil {
+			return
+		}
+		a.post(func() {
+			a.previews[path] = ui.NewBitmap(img)
+		})
+	}()
+	return nil
+}
+
+// decodeThumb 解码图片并把最长边缩到 maxSize 像素以内，只用于列表缩略图。
+func decodeThumb(path string, maxSize int) (image.Image, error) {
 	st, err := os.Stat(path)
-	if err != nil || st.Size() > 16<<20 {
-		return nil
-	}
-	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	b, err := ui.DecodeBitmap(data)
+	if st.Size() > 16<<20 {
+		return nil, fmt.Errorf("图片超过 16 MB")
+	}
+	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	a.previews[path] = b
-	return b
+	defer f.Close()
+
+	var img image.Image
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".avif":
+		img, err = avif.Decode(f)
+	default:
+		img, _, err = image.Decode(f)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= maxSize && h <= maxSize {
+		return img, nil
+	}
+	scale := float64(maxSize) / float64(max(w, h))
+	dst := image.NewRGBA(image.Rect(0, 0, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, xdraw.Over, nil)
+	return dst, nil
 }

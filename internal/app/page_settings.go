@@ -8,6 +8,24 @@ import (
 	"cloudpix/internal/store"
 )
 
+// visionPreset 是「自动标签」里可一键填入的视觉接口预设。
+type visionPreset struct {
+	Name     string
+	Endpoint string
+	Model    string
+}
+
+// visionPresets 按国内网络的可达性挑选：百炼、智谱、硅基流动、Kimi
+// 均可直连，OpenAI 需要代理，本地 Ollama 需要先启动服务。
+var visionPresets = []visionPreset{
+	{"阿里云百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen-vl-max"},
+	{"智谱 GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4v-flash"},
+	{"硅基流动", "https://api.siliconflow.cn/v1/chat/completions", "Qwen/Qwen2.5-VL-7B-Instruct"},
+	{"Kimi", "https://api.moonshot.cn/v1/chat/completions", "moonshot-v1-8k-vision-preview"},
+	{"本地 Ollama", "http://127.0.0.1:11434/v1/chat/completions", "qwen2.5vl:7b"},
+	{"OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini"},
+}
+
 // pageSettingsView 是“设置”页。布局沿用 mygo-qyin：页面标题 + 分组卡片，
 // 每行左侧标签与说明、右侧控件。页内分成「上传接口」与「通用设置」两个
 // 子页签，分别管理云存储连接和与厂商无关的上传行为。
@@ -29,7 +47,13 @@ func (a *app) pageSettingsView(c *ui.Context, p palette) {
 			a.storageGroup(c, p)
 			a.linkGroup(c, p)
 			a.credentialGroup(c, p)
-			ui.Text(c, "密钥优先保存在系统钥匙串；钥匙串不可用时回退到用户数据目录下的 credentials.json。链接处理参数按接口保存，切换配置后自动生效。保存后立即生效，正在上传的任务继续使用旧配置完成。").
+			settingsGroup(c, p, "上报分类", func() {
+				settingsRow(c, p, "分类标记", "上传成功后登记到接口时使用的 age 字段，可留空。", func() {
+					ui.TextInput(c, &a.cfg.Report.Age).Width(200).Label("分类标记").
+						Placeholder("p站")
+				})
+			})
+			ui.Text(c, "访问密钥随配置一起保存在用户数据目录的 config.json（文件权限 0600），换机时复制该文件即可带走配置；请不要把它分享给他人。链接处理参数按接口保存，切换配置后自动生效。保存后立即生效，正在上传的任务继续使用旧配置完成。").
 				FontSize(11.5).TextColor(p.Faint).LineHeight(1.5).Margin(6, 4, 0, 0)
 			return
 		}
@@ -42,19 +66,23 @@ func (a *app) pageSettingsView(c *ui.Context, p palette) {
 					idx = 1
 				case store.FormatAVIF:
 					idx = 2
+				case store.FormatWebP:
+					idx = 3
 				}
-				if segmented(c, p, "process-format", &idx, "保持原格式", "JPEG", "AVIF") {
+				if segmented(c, p, "process-format", &idx, "保持原格式", "JPEG", "AVIF", "WebP") {
 					switch idx {
 					case 1:
 						a.cfg.Process.Format = store.FormatJPEG
 					case 2:
 						a.cfg.Process.Format = store.FormatAVIF
+					case 3:
+						a.cfg.Process.Format = store.FormatWebP
 					default:
 						a.cfg.Process.Format = store.FormatKeep
 					}
 				}
 			})
-			settingsRow(c, p, "压缩质量", "数值越高越清晰、文件越大；仅对 JPEG 与 AVIF 生效。", func() {
+			settingsRow(c, p, "压缩质量", "数值越高越清晰、文件越大；仅对 JPEG、WebP 与 AVIF 生效。", func() {
 				labels := []string{"90 高清", "80 标准", "70 较小", "60 最小"}
 				values := []int{90, 80, 70, 60}
 				chosen := labels[1]
@@ -112,9 +140,42 @@ func (a *app) pageSettingsView(c *ui.Context, p palette) {
 			settingsRow(c, p, "访问令牌", "写入请求头 X-Api-Token，需与服务端 UPLOAD_TOKEN 一致。", func() {
 				ui.TextInput(c, &a.cfg.Report.Token).Width(280).Label("访问令牌").Password()
 			})
-			settingsRow(c, p, "分类标记", "对应接口里的 age 字段，可留空。", func() {
-				ui.TextInput(c, &a.cfg.Report.Age).Width(200).Label("分类标记").
-					Placeholder("p站")
+		})
+
+		settingsGroup(c, p, "自动标签", func() {
+			settingsRow(c, p, "启用自动标签", "上传成功后把公开链接发给视觉模型，生成中文标签并随上报写入服务端 tags 字段。", func() {
+				ui.Switch(c.Key("vision-enabled"), &a.cfg.Vision.Enabled).Label("启用自动标签")
+			})
+			settingsRow(c, p, "接口预设", "选择预设会自动填入地址与模型；国内网络可直接使用百炼、智谱、硅基流动与 Kimi。", func() {
+				names := make([]string, 0, len(visionPresets)+1)
+				chosen := "自定义"
+				for _, v := range visionPresets {
+					names = append(names, v.Name)
+					if v.Endpoint == strings.TrimSpace(a.cfg.Vision.Endpoint) {
+						chosen = v.Name
+					}
+				}
+				names = append(names, "自定义")
+				if ui.Select(c.Key("vision-preset"), &chosen, names).Label("接口预设").Width(180).Changed() {
+					for _, v := range visionPresets {
+						if v.Name == chosen {
+							a.cfg.Vision.Endpoint = v.Endpoint
+							a.cfg.Vision.Model = v.Model
+							break
+						}
+					}
+				}
+			})
+			settingsRow(c, p, "模型接口", "兼容 OpenAI 的 chat/completions 接口。", func() {
+				ui.TextInput(c, &a.cfg.Vision.Endpoint).Width(280).Label("模型接口").
+					Placeholder("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+			})
+			settingsRow(c, p, "模型名称", "预设已填好常用模型，可按需修改。", func() {
+				ui.TextInput(c, &a.cfg.Vision.Model).Width(200).Label("模型名称").
+					Placeholder("qwen-vl-max")
+			})
+			settingsRow(c, p, "访问令牌", "以 Bearer 方式写入 Authorization 请求头；本地 Ollama 可留空。", func() {
+				ui.TextInput(c, &a.cfg.Vision.Token).Width(280).Label("访问令牌").Password()
 			})
 		})
 
@@ -230,10 +291,10 @@ func (a *app) linkGroup(c *ui.Context, p palette) {
 func (a *app) credentialGroup(c *ui.Context, p palette) {
 	settingsGroup(c, p, "访问密钥", func() {
 		settingsRow(c, p, "AccessKey", "", func() {
-			ui.TextInput(c, &a.draftCreds.AccessKey).Width(280).Label("AccessKey")
+			ui.TextInput(c, &a.draft.AccessKey).Width(280).Label("AccessKey")
 		})
 		settingsRow(c, p, "SecretKey", "", func() {
-			ui.TextInput(c, &a.draftCreds.SecretKey).Width(280).Label("SecretKey").Password()
+			ui.TextInput(c, &a.draft.SecretKey).Width(280).Label("SecretKey").Password()
 		})
 	})
 }

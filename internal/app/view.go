@@ -80,7 +80,6 @@ func (a *app) navItem(c *ui.Context, p palette, key string, page int, label stri
 		if page == pageSettings {
 			// 每次进入设置页都放弃未保存的编辑。
 			a.draft = a.prof
-			a.draftCreds = a.creds
 		}
 	})
 	b.Children(func() {
@@ -95,7 +94,6 @@ func (a *app) profileRow(c *ui.Context, p palette) {
 		AlignItems(ui.Center).Justify(ui.Start).Label("当前云存储配置").OnClick(func() {
 		a.page = pageSettings
 		a.draft = a.prof
-		a.draftCreds = a.creds
 	})
 	if b.Hovered() {
 		b.Background(p.Hover)

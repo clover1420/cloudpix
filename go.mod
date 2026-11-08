@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/egoist/mygo v0.8.1
 	github.com/gen2brain/avif v0.6.0
+	github.com/gen2brain/webp v0.6.4
 	golang.org/x/image v0.46.0
 )
 

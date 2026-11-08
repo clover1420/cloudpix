@@ -14,8 +14,8 @@ go test ./...            # 单元测试
 go build -o build/CloudPix.exe .
 ```
 
-首次运行会在用户数据目录生成 `config.json`，密钥保存在系统钥匙串（失败时回退
-`credentials.json`）。想重置配置，删除对应的 `config.json` 即可。
+首次运行会在用户数据目录生成 `config.json`，访问密钥随配置一起保存在该文件
+（0600）。想重置配置，删除对应的 `config.json` 即可。
 
 ## 2. 代码约定
 
@@ -102,7 +102,7 @@ func (a *app) provider() (upload.Provider, error) {
 		return upload.NewAcme(upload.AcmeConfig{
 			Name:       p.Name,
 			APIBase:    p.Endpoint,
-			Token:      st.creds.SecretKey,
+			Token:      p.SecretKey,
 			PublicBase: p.PublicBase,
 		})
 	default:

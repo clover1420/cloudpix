@@ -1,5 +1,4 @@
-// Package store 负责持久化：云厂商配置（JSON 文件）、访问密钥
-// （系统钥匙串，失败时回退到本地文件）、上传历史。
+// Package store 负责持久化：云厂商配置与访问密钥（config.json）、上传历史。
 //
 // 所有方法都可以在主线程调用；纯 IO 不做额外协程，文件都很小。
 package store
@@ -13,10 +12,13 @@ import (
 	"github.com/egoist/mygo"
 )
 
-// Profile 是一套云存储配置。凭据不在其中，见 credentials.go。
+// Profile 是一套云存储配置，访问密钥随配置一起保存在 config.json。
 type Profile struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// AccessKey / SecretKey 是该配置的访问密钥，与配置一起保存在 config.json。
+	AccessKey string `json:"accessKey,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"`
 	// Kind 是预设类型：bitiful（缤纷云 S4）或 s3（通用 S3 兼容）。
 	Kind       string `json:"kind"`
 	Endpoint   string `json:"endpoint"`
@@ -32,7 +34,7 @@ type Profile struct {
 
 // Process 是上传前的图片处理参数。
 type Process struct {
-	// Format 是目标格式：keep（保持原格式）、jpeg、avif。
+	// Format 是目标格式：keep（保持原格式）、jpeg、webp、avif。
 	Format string `json:"format"`
 	// Quality 是压缩质量，取值 1-100。
 	Quality int `json:"quality"`
@@ -43,6 +45,7 @@ const (
 	FormatKeep = "keep"
 	FormatJPEG = "jpeg"
 	FormatAVIF = "avif"
+	FormatWebP = "webp"
 )
 
 // Report 是上传成功后把图片信息登记到外部接口的配置。
@@ -54,6 +57,15 @@ type Report struct {
 	Age string `json:"age"`
 }
 
+// Vision 是上传完成后调用视觉模型生成内容标签的配置。
+// 接口需兼容 OpenAI 的 chat/completions，图片以公开链接传入。
+type Vision struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint"`
+	Token    string `json:"token"`
+	Model    string `json:"model"`
+}
+
 // Config 是应用配置。
 type Config struct {
 	Active   string    `json:"active"`
@@ -63,6 +75,7 @@ type Config struct {
 	// Profile.LinkParams；新配置不再写入这个字段。
 	LinkParams string `json:"linkParams,omitempty"`
 	Report     Report `json:"report"`
+	Vision     Vision `json:"vision"`
 	AutoCopy   bool   `json:"autoCopy"`
 	KeepName   bool   `json:"keepName"`
 	// Batch 是同时上传的张数（1-10），默认 1 表示逐张上传。
@@ -92,7 +105,13 @@ func Default() Config {
 				Prefix:   "images",
 			},
 		},
-		Process:  Process{Format: FormatKeep, Quality: 80},
+		Process: Process{Format: FormatKeep, Quality: 80},
+		Vision: Vision{
+			// 默认指向国内可直连的阿里云百炼（OpenAI 兼容模式），
+			// 用户只需填写自己的 API Key 并启用。
+			Endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+			Model:    "qwen-vl-max",
+		},
 		AutoCopy: true,
 		Batch:    1,
 	}
@@ -123,6 +142,12 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.Process = normalizeProcess(cfg.Process)
 	cfg.Batch = normalizeBatch(cfg.Batch)
+	// 旧配置没有视觉接口时补上默认可直连的百炼，用户只需填 Key。
+	if cfg.Vision.Endpoint == "" {
+		def := Default().Vision
+		cfg.Vision.Endpoint = def.Endpoint
+		cfg.Vision.Model = def.Model
+	}
 	// 旧版的全局链接参数迁移到当前配置上。
 	if cfg.LinkParams != "" {
 		for i := range cfg.Profiles {
@@ -153,7 +178,7 @@ func normalizeBatch(n int) int {
 // normalizeProcess 补齐处理参数的缺省值，兼容旧版配置文件。
 func normalizeProcess(p Process) Process {
 	switch p.Format {
-	case FormatJPEG, FormatAVIF:
+	case FormatJPEG, FormatAVIF, FormatWebP:
 	default:
 		p.Format = FormatKeep
 	}

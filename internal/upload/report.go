@@ -50,20 +50,23 @@ type ReportImage struct {
 	Time   string
 	// Theme 是图片主题色（#rrggbb），取不到时为空字符串。
 	Theme string
+	// Tags 是视觉模型生成的内容标签，未启用时为空。
+	Tags []string
 }
 
 // reportPayload 是接口要求的 JSON 结构。
 type reportPayload struct {
-	ID    string  `json:"id"`
-	Title string  `json:"title"`
-	URL   string  `json:"url"`
-	W     int     `json:"w"`
-	H     int     `json:"h"`
-	Age   string  `json:"age"`
-	Size  float64 `json:"size"`
-	MD5   string  `json:"md5"`
-	Time  string  `json:"time"`
-	Color string  `json:"theme_color"`
+	ID    string   `json:"id"`
+	Title string   `json:"title"`
+	URL   string   `json:"url"`
+	W     int      `json:"w"`
+	H     int      `json:"h"`
+	Age   string   `json:"age"`
+	Size  float64  `json:"size"`
+	MD5   string   `json:"md5"`
+	Time  string   `json:"time"`
+	Color string   `json:"theme_color"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 // SendReport 把图片信息 POST 到配置的接口。409（已存在）视为成功，
@@ -85,6 +88,7 @@ func SendReport(cfg ReportConfig, img ReportImage) error {
 		MD5:   img.MD5,
 		Time:  img.Time,
 		Color: img.Theme,
+		Tags:  img.Tags,
 	})
 	if err != nil {
 		return fmt.Errorf("序列化上报内容失败：%w", err)

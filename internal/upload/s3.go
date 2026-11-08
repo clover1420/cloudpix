@@ -26,7 +26,7 @@ type S3Config struct {
 	// Region 参与 SigV4 签名；S3 兼容服务通常忽略它，但必须与配置一致。
 	Region string
 	Bucket string
-	// AccessKey / SecretKey 从系统钥匙串读取，不写入配置文件。
+	// AccessKey / SecretKey 来自应用配置（config.json）。
 	AccessKey string
 	SecretKey string
 	// PublicBase 是 CDN 或公开访问域名，例如 https://cdn.example.com。

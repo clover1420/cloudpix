@@ -45,6 +45,7 @@ func TestSendReport(t *testing.T) {
 		MD5:    "0123456789abcdef0123456789abcdef",
 		Time:   "2026-10-25 12:00:00",
 		Theme:  "#285adc",
+		Tags:   []string{"人物", "风景"},
 	}
 	cfg := ReportConfig{Enabled: true, Endpoint: srv.URL, Token: "secret"}
 	if err := SendReport(cfg, img); err != nil {
@@ -57,6 +58,9 @@ func TestSendReport(t *testing.T) {
 		got.Age != "p站" || got.Size != 1.25 || got.MD5 != img.MD5 || got.Time != img.Time ||
 		got.Color != img.Theme {
 		t.Fatalf("请求体不正确：%+v", got)
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "人物" || got.Tags[1] != "风景" {
+		t.Fatalf("tags 字段不正确：%v", got.Tags)
 	}
 	// 字段名必须与接口约定一致：theme_color。
 	var fields map[string]any

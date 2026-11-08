@@ -19,16 +19,16 @@
                     │                     │
           ┌─────────▼─────────┐  ┌────────▼──────────┐
           │ internal/upload   │  │ internal/store    │
-          │ Provider / S3     │  │ 配置 / 密钥 / 历史 │
-          │ Manager / Job     │  │ (JSON + 钥匙串)    │
+          │ Provider / S3     │  │ 配置（含密钥）/ 历史│
+          │ Manager / Job     │  │ (JSON 文件)        │
           └───────────────────┘  └───────────────────┘
 ```
 
 依赖方向只有一条：`app → upload / store`。
 
 - `upload` 不导入 `app`、不导入 `mygo/ui`，可以在 `go test` 里独立运行。
-- `store` 导入 `mygo` 只为了两个系统能力：`mygo.App.Path(PathUserData)` 与
-  `mygo.Secrets`（系统钥匙串）。它同样不导入 UI。
+- `store` 导入 `mygo` 只为了一个系统能力：`mygo.App.Path(PathUserData)`；
+  它同样不导入 UI。
 - 跨层交互通过**接口与回调**：`upload.Manager` 不知道界面的存在，只调用
   `onChange` / `onDone`；由 `app` 决定把它们投递到主线程。
 
@@ -73,15 +73,16 @@ func (a *app) post(fn func()) {
    记住上次目录；选中后交给 `Manager.Enqueue`。
 2. **入队**：`Manager` 为每个文件建一个 `Job`（状态 `queued`），启动一个协程。
 3. **处理**：若设置里选了目标格式，`upload.ProcessFile` 先转码到临时文件
-   （JPEG 会铺白底以处理透明，AVIF 由 gen2brain/avif 的 WASM 编码器完成；
-   非图片文件原样通过）。临时文件在任务结束后删除。
+   （JPEG 会铺白底以处理透明，WebP / AVIF 保留透明通道，分别由
+   gen2brain/webp 与 gen2brain/avif 的 WASM 编码器完成；非图片文件原样通过）。
+   临时文件在任务结束后删除。转码与取主题色串行执行，避免多张同时吃满 CPU。
 4. **摘要**：协程先占一个并发槽（`sem`，容量 3），状态改为 `hashing`，
    流式计算 SHA-256 与文件大小。S3 的 SigV4 需要内容摘要，所以这一步不能省。
 5. **生成键**：`upload.BuildKey(prefix, path, sha, keepName, now)`，规则见第 6 节；
    路径用的是处理后文件的扩展名，文件名主干仍取原文件。
 6. **上传**：`app.provider()` 用当前配置快照构造 `upload.S3`；状态改为
    `uploading`；`Object` 携带 key、大小、Content-Type、摘要与文件句柄。
-7. **进度**：`progressReader` 在每次读取时回调；`Manager` 按 150ms 或
+7. **进度**：`progressReader` 在每次读取时回调；`Manager` 按 200ms 或
    100% 变化做节流，再触发 `onChange`。
 8. **收尾**：成功写 `done` + URL；失败写 `failed` + 可读错误。成功时 `onDone`
    交给 `app.done`，由主线程写历史、复制链接并提示。若设置里填了链接处理参数，
@@ -109,16 +110,15 @@ images/2026/11/07/<sha256 前 8 位>-原文件名.png       // 开启“保留�
 
 - 日期目录让桶内文件自然分层，便于 CDN 缓存与生命周期策略。
 - 摘要前缀保证同名文件不会互相覆盖（内容相同则键相同，天然去重）。
-- 开启图片处理后，扩展名换成本次输出的格式（`.jpg` / `.avif`），其余规则不变。
+- 开启图片处理后，扩展名换成本次输出的格式（`.jpg` / `.webp` / `.avif`），其余规则不变。
 - 文件名做了净化：只保留字母、数字、汉字与 `-_.`，其余折叠为 `-`。
 - 前缀可在设置页修改，留空则直接使用日期目录。
 
-## 7. 配置、密钥与历史
+## 7. 配置与历史
 
 | 数据 | 位置 | 说明 |
 | --- | --- | --- |
-| 配置 | `PathUserData/config.json` | JSON，0600；损坏时备份为 `.bak` 并回退默认 |
-| 密钥 | 系统钥匙串，键 `cred.<profileID>` | 钥匙串不可用时写 `PathUserData/credentials.json`（0600） |
+| 配置 | `PathUserData/config.json` | JSON，0600；含各配置的 AccessKey / SecretKey；损坏时备份为 `.bak` 并回退默认 |
 | 历史 | `PathUserData/history.json` | 最多 300 条，最新的在前；只记录上传成功的对象 |
 
 `PathUserData` 由 MyGo 依据 `mygo.json` 的 `name` / `identifier` 决定，不同系统位置不同。

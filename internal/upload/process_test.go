@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gen2brain/avif"
+	"golang.org/x/image/webp"
 )
 
 // makePNG 生成一张带透明区域的测试图，用来验证转码与白底合成。
@@ -108,6 +109,31 @@ func TestProcessAVIF(t *testing.T) {
 	img, err := avif.Decode(f)
 	if err != nil {
 		t.Fatalf("解码 AVIF 失败：%v", err)
+	}
+	b := img.Bounds()
+	if b.Dx() != 80 || b.Dy() != 60 {
+		t.Fatalf("尺寸应保持不变，得到 %dx%d", b.Dx(), b.Dy())
+	}
+}
+
+func TestProcessWebP(t *testing.T) {
+	src := makePNG(t, t.TempDir())
+	got, err := ProcessFile(src, ProcessConfig{Format: "webp", Quality: 80})
+	if err != nil {
+		t.Fatalf("转 WebP 失败：%v", err)
+	}
+	defer os.Remove(got.Path)
+	if !got.Temporary || got.Ext != ".webp" || got.Size <= 0 {
+		t.Fatalf("转码结果不符合预期：%+v", got)
+	}
+	f, err := os.Open(got.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := webp.Decode(f)
+	if err != nil {
+		t.Fatalf("解码 WebP 失败：%v", err)
 	}
 	b := img.Bounds()
 	if b.Dx() != 80 || b.Dy() != 60 {

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gen2brain/avif"
+	webpenc "github.com/gen2brain/webp"
 	_ "image/gif"
 	_ "image/png"
 
@@ -22,11 +23,12 @@ const (
 	processKeep = "keep"
 	processJPEG = "jpeg"
 	processAVIF = "avif"
+	processWebP = "webp"
 )
 
 // ProcessConfig 是上传前图片处理参数。
 type ProcessConfig struct {
-	// Format 是目标格式：keep / jpeg / avif。空值等同 keep。
+	// Format 是目标格式：keep / jpeg / webp / avif。空值等同 keep。
 	Format string
 	// Quality 是压缩质量，1-100；超出范围时按 80 处理。
 	Quality int
@@ -48,7 +50,7 @@ func ProcessFile(src string, pc ProcessConfig) (Processed, error) {
 	if format == "" {
 		format = processKeep
 	}
-	if format != processJPEG && format != processAVIF {
+	if format != processJPEG && format != processAVIF && format != processWebP {
 		return Processed{Path: src}, nil
 	}
 
@@ -63,8 +65,11 @@ func ProcessFile(src string, pc ProcessConfig) (Processed, error) {
 	}
 
 	ext := ".jpg"
-	if format == processAVIF {
+	switch format {
+	case processAVIF:
 		ext = ".avif"
+	case processWebP:
+		ext = ".webp"
 	}
 	out, err := os.CreateTemp("", "cloudpix-*"+ext)
 	if err != nil {
@@ -195,11 +200,16 @@ func decodeImage(path string) (image.Image, error) {
 
 // encodeImage 按目标格式写出。JPEG 不支持透明，先铺白底。
 func encodeImage(out *os.File, img image.Image, format string, quality int) error {
-	if format == processAVIF {
+	switch format {
+	case processAVIF:
 		return avif.Encode(out, img, avif.Options{
 			Quality: quality,
 			Speed:   8,
 		})
+	case processWebP:
+		// WebP 支持透明通道，直接保留原图。Method 0 是最快档，
+		// 只影响压缩耗时与压缩率，不改变视觉质量。
+		return webpenc.Encode(out, img, webpenc.Options{Quality: quality, Method: 0})
 	}
 	return jpeg.Encode(out, flatten(img), &jpeg.Options{Quality: quality})
 }

@@ -85,6 +85,10 @@ type Manager struct {
 	process  ProcessConfig
 	linkArgs string
 	reporter func(ImageMeta)
+
+	// heavy 串行化耗 CPU 的图片工作（转码、取主题色），避免多张同时
+	// 解码编码把 CPU 打满，导致界面掉帧。
+	heavy chan struct{}
 }
 
 // NewManager 创建队列。provider 每次上传前调用，返回当前配置对应的
@@ -98,6 +102,7 @@ func NewManager(provider func() (Provider, error), onChange func(), onDone func(
 		ctx:      ctx,
 		cancel:   cancel,
 		batch:    1,
+		heavy:    make(chan struct{}, 1),
 	}
 }
 
@@ -288,7 +293,11 @@ func (m *Manager) run(id int64) {
 
 	// 按设置转码，临时文件用完即删；保持原格式时直接用源文件。
 	uploadPath := job.Path
+	// 转码（尤其 AVIF 走 WASM）很吃 CPU；串行执行，避免同时几张把
+	// CPU 打满导致界面掉帧。
+	m.heavy <- struct{}{}
 	proc, err := ProcessFile(job.Path, process)
+	<-m.heavy
 	if err != nil {
 		m.fail(id, err)
 		return
@@ -343,7 +352,7 @@ func (m *Manager) run(id int64) {
 			p = 1
 		}
 		now := time.Now()
-		if sent < total && now.Sub(lastNotify) < 150*time.Millisecond {
+		if sent < total && now.Sub(lastNotify) < 200*time.Millisecond {
 			return
 		}
 		lastNotify = now
@@ -400,15 +409,23 @@ func (m *Manager) run(id int64) {
 		// 尺寸、主题色、MD5 都取图片处理之前的原文件；URL 仍指向上传后的对象。
 		// 解整图取主题色较慢，放到独立协程，避免占用上传批次的位置。
 		go func() {
+			// 解码整图取主题色同样吃 CPU，与转码串行；上报与标签请求是
+			// 网络 IO，放在锁外，避免拖住下一张的转码。
+			m.heavy <- struct{}{}
 			w, h, ok := ImageSize(job.Path)
-			if !ok {
-				return
-			}
 			md5sum := md5sum
 			if proc.Temporary {
 				if _, sum, _, err := hashFile(job.Path); err == nil {
 					md5sum = sum
 				}
+			}
+			theme := ""
+			if ok {
+				theme = ThemeColor(job.Path)
+			}
+			<-m.heavy
+			if !ok {
+				return
 			}
 			reporter(ImageMeta{
 				Job:    done,
@@ -416,7 +433,7 @@ func (m *Manager) run(id int64) {
 				MD5:    md5sum,
 				Width:  w,
 				Height: h,
-				Theme:  ThemeColor(job.Path),
+				Theme:  theme,
 			})
 		}()
 	}

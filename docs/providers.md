@@ -14,7 +14,7 @@ CloudPix 通过 S3 协议上传，因此“换云”通常只是改几个配置�
 | 公开访问域名 | 生成外链时使用的域名 | 留空则用 Endpoint 拼 |
 | 对象前缀 | 对象键的第一段目录 | 例如 `images` |
 | PathStyle | 地址风格 | `true` 为 `endpoint/bucket/key`；`false` 为 `bucket.endpoint/key` |
-| AccessKey / SecretKey | 访问密钥 | 只存钥匙串，不写入 config.json |
+| AccessKey / SecretKey | 访问密钥 | 随配置保存在 `config.json`（0600） |
 
 ## 2. 缤纷云 S4
 
@@ -97,12 +97,11 @@ https://<bucket>.s3.bitiful.net/images/2026/11/07/8f3c1a2b9d4e5f60.png
 
 ## 6. 安全建议
 
-- 桌面应用把 SK 存在本机是合理的：优先系统钥匙串，回退文件时权限为 `0600`。
+- 桌面应用把 SK 存在本机是合理的：随配置写入 `config.json`，权限为 `0600`。
 - **不要**把这种“客户端持 SK 直传”的模式搬到 Web 前端；浏览器里应使用服务端签发的
   预签名 URL（限时、限对象键、限方法）。
 - 使用子账户 + 最小权限（仅目标桶、仅 PutObject），并定期轮换密钥。
-- 不要把 `credentials.json` 提交到代码仓库；本项目的 `.gitignore` 已忽略构建产物，
-  但用户数据目录在系统路径下，不在仓库内。
+- 不要把含密钥的 `config.json` 提交到代码仓库；用户数据目录在系统路径下，不在仓库内。
 
 ## 7. 连通性自检
 
