@@ -44,8 +44,11 @@ type Job struct {
 	Status    JobStatus
 	Progress  float64
 	Err       string
-	Started   time.Time
-	Finished  time.Time
+	// Report 是图片信息上报的结果："ok" 成功、"fail" 失败，
+	// 空值表示尚未上报或未启用上报。
+	Report   string
+	Started  time.Time
+	Finished time.Time
 }
 
 // ImageMeta 是上报图片信息所需的完整数据。
@@ -483,6 +486,11 @@ func (m *Manager) Jobs() []Job {
 	return out
 }
 
+// SetReport 记录某个任务的上报结果（"ok"/"fail"），并通知界面刷新。
+func (m *Manager) SetReport(id int64, state string) {
+	m.update(id, func(j *Job) { j.Report = state })
+}
+
 // Retry 重跑一条已结束的任务，按批次排到队尾。仅在主线程调用。
 func (m *Manager) Retry(id int64) {
 	m.mu.Lock()
@@ -499,6 +507,7 @@ func (m *Manager) Retry(id int64) {
 		j.URL = ""
 		j.Key = ""
 		j.Processed = 0
+		j.Report = ""
 		j.Started, j.Finished = time.Time{}, time.Time{}
 		break
 	}

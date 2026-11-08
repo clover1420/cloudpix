@@ -16,6 +16,7 @@ const titleBarHeight = 46
 func (a *app) view(c *ui.Context) {
 	c.SetTheme(a.theme(c))
 	p := paletteFor(c.Theme())
+	a.ensureCategories()
 
 	// Toast 每次消息只投递一次，避免逐帧重置它的停留时间。
 	if a.toast != "" && a.toastSeq != a.toastedSeq {

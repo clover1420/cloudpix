@@ -41,6 +41,7 @@ func (a *app) pageUploadView(c *ui.Context, p palette) {
 	})
 
 	a.dropZone(c, p)
+	a.reportBar(c, p)
 
 	if len(jobs) == 0 {
 		ui.Box(c.Key("empty")).FillWidth().Grow(1).Center().Children(func() {
@@ -57,6 +58,52 @@ func (a *app) pageUploadView(c *ui.Context, p palette) {
 		Gap(8).Children(func() {
 		for i := len(jobs) - 1; i >= 0; i-- { // 最新的在最上面
 			a.jobRow(c, p, jobs[i])
+		}
+	})
+}
+
+// reportBar 是上传页的分类标记选择，分类会随图片信息一起上报。
+// 未启用上报时不显示，避免占位。
+func (a *app) reportBar(c *ui.Context, p palette) {
+	if !a.cfg.Report.Enabled {
+		return
+	}
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "分类标记").FontSize(12).TextColor(p.Muted)
+		opts := []string{"不设置"}
+		chosen := "不设置"
+		for _, cat := range a.categories {
+			opts = append(opts, cat.Name)
+			if cat.CID == a.cfg.Report.CategoryID {
+				chosen = cat.Name
+			}
+		}
+		if a.cfg.Report.CategoryID > 0 && chosen == "不设置" {
+			// 分类已被服务端删除时保留原选择，避免静默丢失。
+			chosen = "已失效的分类"
+			opts = append(opts, chosen)
+		}
+		if ui.Select(c.Key("report-age"), &chosen, opts).Width(160).Changed() {
+			a.cfg.Report.CategoryID = 0
+			a.cfg.Report.Age = ""
+			for _, cat := range a.categories {
+				if cat.Name == chosen {
+					a.cfg.Report.CategoryID = cat.CID
+					break
+				}
+			}
+			a.publishReport()
+		}
+		if quietButton(c, p, "reload-categories", "刷新").Clicked() {
+			a.reloadCategories()
+		}
+		switch {
+		case a.catsLoading:
+			ui.Text(c, "加载中…").FontSize(11).TextColor(p.Faint)
+		case a.catErr != "":
+			ui.Text(c, "分类加载失败").FontSize(11).TextColor(badColor(p.Dark))
+		case len(a.categories) == 0:
+			ui.Text(c, "暂无分类").FontSize(11).TextColor(p.Faint)
 		}
 	})
 }
@@ -119,7 +166,11 @@ func (a *app) jobRow(c *ui.Context, p palette, j upload.Job) {
 				if j.Processed > 0 && j.Processed != j.Size {
 					sizeLine = formatBytes(j.Size) + " → " + formatBytes(j.Processed)
 				}
-				ui.Text(c, sizeLine).FontSize(10.5).TextColor(p.Faint)
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, sizeLine).FontSize(10.5).TextColor(p.Faint)
+					label, color := reportLabel(j.Report, p)
+					ui.Text(c, label).FontSize(10.5).TextColor(color)
+				})
 			})
 
 			ui.Row(c).Gap(2).Shrink(0).AlignItems(ui.Center).Children(func() {

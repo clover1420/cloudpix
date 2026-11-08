@@ -47,12 +47,6 @@ func (a *app) pageSettingsView(c *ui.Context, p palette) {
 			a.storageGroup(c, p)
 			a.linkGroup(c, p)
 			a.credentialGroup(c, p)
-			settingsGroup(c, p, "上报分类", func() {
-				settingsRow(c, p, "分类标记", "上传成功后登记到接口时使用的 age 字段，可留空。", func() {
-					ui.TextInput(c, &a.cfg.Report.Age).Width(200).Label("分类标记").
-						Placeholder("p站")
-				})
-			})
 			ui.Text(c, "访问密钥随配置一起保存在用户数据目录的 config.json（文件权限 0600），换机时复制该文件即可带走配置；请不要把它分享给他人。链接处理参数按接口保存，切换配置后自动生效。保存后立即生效，正在上传的任务继续使用旧配置完成。").
 				FontSize(11.5).TextColor(p.Faint).LineHeight(1.5).Margin(6, 4, 0, 0)
 			return
@@ -133,9 +127,9 @@ func (a *app) pageSettingsView(c *ui.Context, p palette) {
 			settingsRow(c, p, "启用上报", "上传成功后把链接、尺寸、大小、MD5 与时间 POST 到自建接口，失败只提示，不影响上传结果。", func() {
 				ui.Switch(c.Key("report-enabled"), &a.cfg.Report.Enabled).Label("启用上报")
 			})
-			settingsRow(c, p, "接口地址", "例如 http://localhost:2503/api/v1/img/up。", func() {
-				ui.TextInput(c, &a.cfg.Report.Endpoint).Width(280).Label("接口地址").
-					Placeholder("http://localhost:2503/api/v1/img/up")
+			settingsRow(c, p, "接口域名", "如 https://api.example.com；上报路径 /api/v1/img/up 与分类路径 /api/v1/categories 由程序拼接。", func() {
+				ui.TextInput(c, &a.cfg.Report.Endpoint).Width(280).Label("接口域名").
+					Placeholder("https://api.example.com")
 			})
 			settingsRow(c, p, "访问令牌", "写入请求头 X-Api-Token，需与服务端 UPLOAD_TOKEN 一致。", func() {
 				ui.TextInput(c, &a.cfg.Report.Token).Width(280).Label("访问令牌").Password()

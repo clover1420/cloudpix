@@ -17,6 +17,9 @@ type Record struct {
 	URL     string    `json:"url"`
 	Profile string    `json:"profile"`
 	At      time.Time `json:"at"`
+	// Report 是图片信息上报的结果："ok" 成功、"fail" 失败，
+	// 空值表示没有上报（未启用或任务被跳过）。
+	Report string `json:"report,omitempty"`
 }
 
 // historyLimit 是历史文件保留的条数。
@@ -62,6 +65,27 @@ func AddHistory(r Record) error {
 	all = append([]Record{r}, kept...)
 	if len(all) > historyLimit {
 		all = all[:historyLimit]
+	}
+	data, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFile(historyPath(), data)
+}
+
+// UpdateHistoryReport 把最近一条对应 ID 的记录标记上报结果并落盘。
+func UpdateHistoryReport(id int64, state string) error {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	all := loadHistoryLocked()
+	for i := range all {
+		if all[i].ID == id {
+			if all[i].Report == state {
+				return nil
+			}
+			all[i].Report = state
+			break
+		}
 	}
 	data, err := json.MarshalIndent(all, "", "  ")
 	if err != nil {

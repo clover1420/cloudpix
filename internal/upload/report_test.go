@@ -11,12 +11,13 @@ import (
 func TestSendReport(t *testing.T) {
 	var got reportPayload
 	var raw []byte
-	var token, contentType string
+	var token, contentType, path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		path = r.URL.Path
 		token = r.Header.Get("X-Api-Token")
 		contentType = r.Header.Get("Content-Type")
 		body, err := io.ReadAll(r.Body)
@@ -35,40 +36,45 @@ func TestSendReport(t *testing.T) {
 	defer srv.Close()
 
 	img := ReportImage{
-		ID:     "0123456789abcdef0123456789abcdef",
 		Title:  "测试图",
 		URL:    "https://img.example.com/a.png",
 		W:      1920,
 		H:      1080,
-		Age:    "p站",
 		SizeMB: 1.25,
 		MD5:    "0123456789abcdef0123456789abcdef",
-		Time:   "2026-10-25 12:00:00",
 		Theme:  "#285adc",
 		Tags:   []string{"人物", "风景"},
 	}
-	cfg := ReportConfig{Enabled: true, Endpoint: srv.URL, Token: "secret"}
+	cfg := ReportConfig{Enabled: true, Endpoint: srv.URL, Token: "secret", CategoryID: 2}
 	if err := SendReport(cfg, img); err != nil {
 		t.Fatalf("上报失败：%v", err)
 	}
-	if token != "secret" || contentType != "application/json" {
-		t.Fatalf("请求头不正确：token=%q content-type=%q", token, contentType)
+	if token != "secret" || contentType != "application/json" || path != "/api/v1/img/up" {
+		t.Fatalf("请求头或路径不正确：token=%q content-type=%q path=%q", token, contentType, path)
 	}
-	if got.ID != img.ID || got.URL != img.URL || got.W != 1920 || got.H != 1080 ||
-		got.Age != "p站" || got.Size != 1.25 || got.MD5 != img.MD5 || got.Time != img.Time ||
-		got.Color != img.Theme {
+	if got.URL != img.URL || got.Width != 1920 || got.Height != 1080 ||
+		got.Size != 1.25 || got.MD5 != img.MD5 || got.ThemeColor != img.Theme {
 		t.Fatalf("请求体不正确：%+v", got)
+	}
+	if got.CategoryID == nil || *got.CategoryID != 2 {
+		t.Fatalf("category_id 不正确：%v", got.CategoryID)
 	}
 	if len(got.Tags) != 2 || got.Tags[0] != "人物" || got.Tags[1] != "风景" {
 		t.Fatalf("tags 字段不正确：%v", got.Tags)
 	}
-	// 字段名必须与接口约定一致：theme_color。
+
+	// 字段名必须与接口约定一致，且不再发送旧版的 id / time / age / w / h。
 	var fields map[string]any
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatalf("解析请求体失败：%v", err)
 	}
-	if fields["theme_color"] != "#285adc" {
-		t.Fatalf("theme_color 字段缺失或取值不对：%v", fields)
+	if fields["theme_color"] != "#285adc" || fields["category_id"] != float64(2) {
+		t.Fatalf("theme_color 或 category_id 字段不对：%v", fields)
+	}
+	for _, key := range []string{"id", "time", "age", "w", "h"} {
+		if _, ok := fields[key]; ok {
+			t.Fatalf("请求体不应包含旧字段 %s：%s", key, raw)
+		}
 	}
 }
 
@@ -80,7 +86,7 @@ func TestSendReportConflictIsOK(t *testing.T) {
 	defer srv.Close()
 
 	cfg := ReportConfig{Enabled: true, Endpoint: srv.URL}
-	if err := SendReport(cfg, ReportImage{ID: "x"}); err != nil {
+	if err := SendReport(cfg, ReportImage{}); err != nil {
 		t.Fatalf("409 应视为成功：%v", err)
 	}
 }
@@ -88,20 +94,5 @@ func TestSendReportConflictIsOK(t *testing.T) {
 func TestSendReportDisabled(t *testing.T) {
 	if err := SendReport(ReportConfig{Endpoint: "http://127.0.0.1:1"}, ReportImage{}); err != nil {
 		t.Fatalf("未启用时不应发请求：%v", err)
-	}
-}
-
-func TestNewReportID(t *testing.T) {
-	id := NewReportID()
-	if len(id) != 6 {
-		t.Fatalf("短 ID 长度应为 6，得到 %d：%s", len(id), id)
-	}
-	for _, c := range id {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'z') {
-			t.Fatalf("短 ID 只能包含小写字母与数字，得到 %s", id)
-		}
-	}
-	if again := NewReportID(); again == id {
-		t.Fatalf("两次生成的短 ID 不应相同：%s", id)
 	}
 }

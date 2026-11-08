@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/egoist/mygo"
 )
@@ -50,11 +51,15 @@ const (
 
 // Report 是上传成功后把图片信息登记到外部接口的配置。
 type Report struct {
-	Enabled  bool   `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// Endpoint 是接口域名（如 https://api.example.com），具体路径由
+	// 程序拼接：/api/v1/img/up 与 /api/v1/categories。
 	Endpoint string `json:"endpoint"`
 	Token    string `json:"token"`
-	// Age 是接口里的分类标记，可留空。
-	Age string `json:"age"`
+	// CategoryID 是上报时使用的分类 cid，0 表示不设置。
+	CategoryID int `json:"categoryId,omitempty"`
+	// Age 是旧版的分类名，只用于迁移成 CategoryID，新配置不再写入。
+	Age string `json:"age,omitempty"`
 }
 
 // Vision 是上传完成后调用视觉模型生成内容标签的配置。
@@ -142,6 +147,8 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.Process = normalizeProcess(cfg.Process)
 	cfg.Batch = normalizeBatch(cfg.Batch)
+	// 旧版保存的是完整接口地址，裁剪成域名后再拼接固定路径。
+	cfg.Report.Endpoint = NormalizeReportBase(cfg.Report.Endpoint)
 	// 旧配置没有视觉接口时补上默认可直连的百炼，用户只需填 Key。
 	if cfg.Vision.Endpoint == "" {
 		def := Default().Vision
@@ -158,6 +165,15 @@ func LoadConfig() (Config, error) {
 		cfg.LinkParams = ""
 	}
 	return cfg, nil
+}
+
+// NormalizeReportBase 把旧版的完整接口地址裁剪成域名。
+func NormalizeReportBase(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "/api/"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSuffix(s, "/")
 }
 
 // normalizeBatch 把同时上传的张数限制在设置页提供的档位：

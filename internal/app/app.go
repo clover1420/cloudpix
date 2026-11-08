@@ -55,9 +55,16 @@ type app struct {
 
 	page        int
 	settingsTab int // 设置页的子页签：0 上传接口，1 通用设置
-	toast       string
-	toastSeq    int // 每条提示的序号
-	toastedSeq  int // 已经交给 c.Toast 的序号，避免逐帧重复投递
+
+	// 分类下拉的数据来自上报接口，首次构建设置页时异步加载。
+	categories  []upload.Category
+	catsLoaded  bool
+	catsLoading bool
+	catErr      string
+
+	toast      string
+	toastSeq   int // 每条提示的序号
+	toastedSeq int // 已经交给 c.Toast 的序号，避免逐帧重复投递
 
 	previews     map[string]*ui.Bitmap
 	previewTried map[string]bool
@@ -194,10 +201,11 @@ func (a *app) done(j upload.Job) {
 		if len(a.history) > 300 {
 			a.history = a.history[:300]
 		}
+		// 上传成功默认不打扰；自动复制失败时才提示。
 		if a.cfg.AutoCopy {
-			a.copyText(j.URL, "上传成功，链接已复制")
-		} else {
-			a.flash("上传成功：" + j.Name)
+			if err := mygo.Clipboard.Write(transfer.TextData(j.URL)); err != nil {
+				a.flash("复制失败：" + err.Error())
+			}
 		}
 	})
 }
@@ -351,6 +359,8 @@ func (a *app) saveSettings() {
 	}
 	a.cfg.Upsert(p)
 	a.cfg.Active = p.ID
+	// 允许粘贴完整接口地址，落盘前统一裁剪成域名。
+	a.cfg.Report.Endpoint = store.NormalizeReportBase(a.cfg.Report.Endpoint)
 	if err := store.SaveConfig(a.cfg); err != nil {
 		a.flash("配置保存失败：" + err.Error())
 		return
@@ -359,11 +369,61 @@ func (a *app) saveSettings() {
 	a.state.Store(&providerState{prof: p})
 	a.mgr.Configure(p.Prefix, a.cfg.KeepName, a.processConfig(), p.LinkParams)
 	a.mgr.SetBatch(a.cfg.Batch)
-	rep := a.cfg.Report
-	a.reportCfg.Store(&rep)
+	a.publishReport()
 	vis := a.cfg.Vision
 	a.visionCfg.Store(&vis)
+	// 接口域名或令牌可能变化，重新拉取分类。
+	a.reloadCategories()
 	a.flash("设置已保存")
+}
+
+// publishReport 把当前的 Report 配置发布给后台上报协程。
+// 分类下拉改完立即调用，避免用户不点“保存设置”时仍按旧分类上报。
+func (a *app) publishReport() {
+	rep := a.cfg.Report
+	a.reportCfg.Store(&rep)
+}
+
+// ensureCategories 首次构建设置页时异步拉取分类；失败保留错误信息，
+// 用户可点“刷新”重试。
+func (a *app) ensureCategories() {
+	if a.catsLoaded || a.catsLoading || a.cfg.Report.Endpoint == "" {
+		return
+	}
+	a.catsLoading = true
+	base, token := a.cfg.Report.Endpoint, a.cfg.Report.Token
+	go func() {
+		cats, err := upload.FetchCategories(base, token)
+		a.post(func() {
+			a.catsLoading = false
+			if err != nil {
+				a.catErr = err.Error()
+				return
+			}
+			a.categories = cats
+			a.catErr = ""
+			a.catsLoaded = true
+			// 旧配置只存了分类名，按名称补上对应的 cid，之后清掉旧字段。
+			if a.cfg.Report.CategoryID == 0 && a.cfg.Report.Age != "" {
+				for _, cat := range cats {
+					if cat.Name == a.cfg.Report.Age {
+						a.cfg.Report.CategoryID = cat.CID
+						break
+					}
+				}
+				a.cfg.Report.Age = ""
+				a.publishReport()
+			}
+		})
+	}()
+}
+
+// reloadCategories 丢弃缓存并立即重新拉取。
+func (a *app) reloadCategories() {
+	a.categories = nil
+	a.catsLoaded = false
+	a.catErr = ""
+	a.ensureCategories()
 }
 
 // reportImage 在上传成功后把图片信息 POST 到用户配置的接口。
@@ -382,15 +442,12 @@ func (a *app) reportImage(m upload.ImageMeta) {
 		size = m.Job.Size
 	}
 	img := upload.ReportImage{
-		ID:     upload.NewReportID(),
 		Title:  title,
 		URL:    m.Job.URL,
 		W:      m.Width,
 		H:      m.Height,
-		Age:    cfg.Age,
 		SizeMB: float64(size) / 1e6,
 		MD5:    m.MD5,
-		Time:   m.Job.Finished.Format("2006-01-02 15:04:05"),
 		Theme:  m.Theme,
 	}
 	// 标签由视觉模型生成；串行请求，避免一次传多张时打满接口。
@@ -415,14 +472,31 @@ func (a *app) reportImage(m upload.ImageMeta) {
 		}
 	}
 	rc := upload.ReportConfig{
-		Enabled:  cfg.Enabled,
-		Endpoint: cfg.Endpoint,
-		Token:    cfg.Token,
-		Age:      cfg.Age,
+		Enabled:    cfg.Enabled,
+		Endpoint:   cfg.Endpoint,
+		Token:      cfg.Token,
+		CategoryID: cfg.CategoryID,
 	}
+	state := "ok"
+	msg := ""
 	if err := upload.SendReport(rc, img); err != nil {
-		a.post(func() { a.flash(err.Error()) })
+		state, msg = "fail", "图片上报失败："+err.Error()
 	}
+	// 把上报结果写回历史，历史页会在大小右侧显示状态。
+	_ = store.UpdateHistoryReport(m.Job.ID, state)
+	a.mgr.SetReport(m.Job.ID, state)
+	a.post(func() {
+		for i := range a.history {
+			if a.history[i].ID == m.Job.ID {
+				a.history[i].Report = state
+				break
+			}
+		}
+		// 上报成功不打扰，只有失败才提示。
+		if msg != "" {
+			a.flash(msg)
+		}
+	})
 }
 
 // processConfig 把 store 的处理参数转换成 upload 包的类型。

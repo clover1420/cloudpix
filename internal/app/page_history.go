@@ -51,6 +51,8 @@ func (a *app) historyRow(c *ui.Context, p palette, index int, r store.Record) {
 						Shrink(1).MinWidth(0)
 					ui.Text(c, shortTime(r.At)).FontSize(11).TextColor(p.Faint)
 					ui.Text(c, formatBytes(r.Size)).FontSize(11).TextColor(p.Faint)
+					label, color := reportLabel(r.Report, p)
+					ui.Text(c, label).FontSize(11).TextColor(color)
 				})
 				ui.Text(c, r.URL).FontSize(11.5).TextColor(p.Muted).SingleLine().Tooltip(r.URL)
 			})

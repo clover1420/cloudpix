@@ -54,6 +54,18 @@ func paletteFor(t *ui.Theme) palette {
 	}
 }
 
+// reportLabel 返回上报状态的文案与颜色，供上传列表与历史页共用。
+func reportLabel(state string, p palette) (string, ui.Color) {
+	switch state {
+	case "ok":
+		return "已上报", okColor(p.Dark)
+	case "fail":
+		return "上报失败", badColor(p.Dark)
+	default:
+		return "未上报", p.Faint
+	}
+}
+
 // 状态色沿用系统绿 / 红，在深浅外观下都清晰。
 func okColor(dark bool) ui.Color {
 	if dark {
