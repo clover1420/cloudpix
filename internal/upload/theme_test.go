@@ -11,7 +11,7 @@ import (
 )
 
 // writePNG 把给定图片写成 PNG，返回路径。
-func writePNG(t *testing.T, img image.Image, name string) string {
+func writePNG(t testing.TB, img image.Image, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	f, err := os.Create(path)
@@ -116,5 +116,25 @@ func TestThemeColorNonImage(t *testing.T) {
 	}
 	if got := ThemeColor(path); got != "" {
 		t.Fatalf("非图片文件应返回空字符串，得到 %q", got)
+	}
+}
+
+func BenchmarkThemeColor(b *testing.B) {
+	// 用 1200×900 的 NRGBA 模拟常见截图：渐变背景上叠几块主体色。
+	img := image.NewNRGBA(image.Rect(0, 0, 1200, 900))
+	for y := 0; y < 900; y++ {
+		for x := 0; x < 1200; x++ {
+			i := y*img.Stride + x*4
+			img.Pix[i] = uint8(x * 255 / 1200)
+			img.Pix[i+1] = uint8(y * 255 / 900)
+			img.Pix[i+2] = 200
+			img.Pix[i+3] = 255
+		}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := themeColor(img); got == "" {
+			b.Fatal("主题色不应为空")
+		}
 	}
 }

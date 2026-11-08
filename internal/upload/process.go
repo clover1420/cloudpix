@@ -131,6 +131,12 @@ func ThemeColor(path string) string {
 	if err != nil {
 		return ""
 	}
+	return themeColor(img)
+}
+
+// themeColor 对已解码的图片取主题色。常见解码格式直接按字节遍历，
+// 绕开 image.Image 的接口调用和 RGBA() 的 16 位预乘换算。
+func themeColor(img image.Image) string {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	if w <= 0 || h <= 0 {
@@ -143,21 +149,76 @@ func ThemeColor(path string) string {
 
 	t := &octree{root: &octreeNode{}, maxLeaf: 16}
 	total := 0
-	for y := b.Min.Y; y < b.Max.Y; y += step {
-		for x := b.Min.X; x < b.Max.X; x += step {
-			r, g, bl, a := img.At(x, y).RGBA()
-			if a < 0x8000 {
-				continue // 透明像素不参与配色
+
+	switch src := img.(type) {
+	case *image.NRGBA:
+		// NRGBA 的 Pix 已经是非预乘的 8 位真色，可直接读。
+		rect, stride, pix := src.Rect, src.Stride, src.Pix
+		for y := rect.Min.Y; y < rect.Max.Y; y += step {
+			row := (y-rect.Min.Y)*stride - rect.Min.X*4
+			for x := rect.Min.X; x < rect.Max.X; x += step {
+				i := row + x*4
+				if pix[i+3] < 0x80 {
+					continue // 透明像素不参与配色
+				}
+				t.add(int(pix[i]), int(pix[i+1]), int(pix[i+2]))
+				total++
 			}
-			// RGBA() 返回预乘值，先还原成 8 位真色。
-			cr := int(r * 0xffff / a >> 8)
-			cg := int(g * 0xffff / a >> 8)
-			cb := int(bl * 0xffff / a >> 8)
-			t.add(t.root, cr, cg, cb, 0)
-			total++
-			// 叶子超过上限时合并最深层节点，与参考实现一致。
-			for t.leafNum > t.maxLeaf {
-				t.reduce()
+		}
+	case *image.RGBA:
+		// RGBA 的 Pix 是预乘值，半透明像素要先还原成真色。
+		rect, stride, pix := src.Rect, src.Stride, src.Pix
+		for y := rect.Min.Y; y < rect.Max.Y; y += step {
+			row := (y-rect.Min.Y)*stride - rect.Min.X*4
+			for x := rect.Min.X; x < rect.Max.X; x += step {
+				i := row + x*4
+				a := int(pix[i+3])
+				if a < 0x80 {
+					continue
+				}
+				r, g, bl := int(pix[i]), int(pix[i+1]), int(pix[i+2])
+				if a != 0xff {
+					r, g, bl = min(255, r*255/a), min(255, g*255/a), min(255, bl*255/a)
+				}
+				t.add(r, g, bl)
+				total++
+			}
+		}
+	case *image.Gray:
+		rect, stride, pix := src.Rect, src.Stride, src.Pix
+		for y := rect.Min.Y; y < rect.Max.Y; y += step {
+			row := (y-rect.Min.Y)*stride - rect.Min.X
+			for x := rect.Min.X; x < rect.Max.X; x += step {
+				v := int(pix[row+x])
+				t.add(v, v, v)
+				total++
+			}
+		}
+	case *image.YCbCr:
+		// JPEG 多解码成 YCbCr，直接做一次颜色转换，省掉接口与预乘开销。
+		rect := src.Rect
+		for y := rect.Min.Y; y < rect.Max.Y; y += step {
+			for x := rect.Min.X; x < rect.Max.X; x += step {
+				ci := src.COffset(x, y)
+				r, g, bl := color.YCbCrToRGB(src.Y[src.YOffset(x, y)], src.Cb[ci], src.Cr[ci])
+				t.add(int(r), int(g), int(bl))
+				total++
+			}
+		}
+	default:
+		// 其余格式（GIF 调色板、CMYK 等）走通用路径。
+		for y := b.Min.Y; y < b.Max.Y; y += step {
+			for x := b.Min.X; x < b.Max.X; x += step {
+				r, g, bl, a := img.At(x, y).RGBA()
+				if a < 0x8000 {
+					continue
+				}
+				// RGBA() 返回预乘值，先还原成 8 位真色。
+				cr := int(r * 0xffff / a >> 8)
+				cg := int(g * 0xffff / a >> 8)
+				cb := int(bl * 0xffff / a >> 8)
+				t.add(cr, cg, cb)
+				total++
 			}
 		}
 	}
@@ -183,28 +244,37 @@ type octree struct {
 	toReduce [7][]*octreeNode
 }
 
-// add 按 level 位把颜色插入子树；level 7 是叶子层。
-func (t *octree) add(n *octreeNode, r, g, b, level int) {
-	if n.leaf {
-		n.count++
-		n.r += r
-		n.g += g
-		n.b += b
-		return
-	}
-	idx := (r>>(7-level))&1<<2 | (g>>(7-level))&1<<1 | (b>>(7-level))&1
-	child := n.children[idx]
-	if child == nil {
-		child = &octreeNode{}
-		n.children[idx] = child
-		if level+1 == 7 {
-			child.leaf = true
-			t.leafNum++
-		} else {
-			t.toReduce[level+1] = append(t.toReduce[level+1], child)
+// add 把一个 8 位真色插入八叉树；插入后叶子超限就合并最深层节点。
+// 循环展开代替递归，省掉每像素 8 层函数调用的开销。
+func (t *octree) add(r, g, b int) {
+	n := t.root
+	for level := 0; ; level++ {
+		if n.leaf {
+			n.count++
+			n.r += r
+			n.g += g
+			n.b += b
+			break
 		}
+		shift := uint(7 - level)
+		idx := (r>>shift)&1<<2 | (g>>shift)&1<<1 | (b>>shift)&1
+		child := n.children[idx]
+		if child == nil {
+			child = &octreeNode{}
+			n.children[idx] = child
+			if level == 6 {
+				child.leaf = true
+				t.leafNum++
+			} else {
+				t.toReduce[level+1] = append(t.toReduce[level+1], child)
+			}
+		}
+		n = child
 	}
-	t.add(child, r, g, b, level+1)
+	// 叶子超过上限时合并最深层节点，与参考实现一致。
+	for t.leafNum > t.maxLeaf {
+		t.reduce()
+	}
 }
 
 // reduce 从最深的非空层取出一个节点合并成叶子；它的子节点此时都已带统计值。
